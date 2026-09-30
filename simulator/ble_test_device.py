@@ -6,6 +6,8 @@ calculates a grade and must not be used as a teacher result.
 
 import argparse
 import asyncio
+import sys
+import threading
 import uuid
 
 from winrt.windows.devices.bluetooth import BluetoothAdapter, BluetoothError
@@ -62,6 +64,47 @@ async def serve():
 
     loop = asyncio.get_running_loop()
     current_value = b"68"
+    result_after_write = b"TEST OK"
+    has_written = False
+    stop_event = asyncio.Event()
+    command_queue = asyncio.Queue()
+
+    def read_console():
+        while True:
+            line = sys.stdin.readline()
+            if not line:
+                return
+            loop.call_soon_threadsafe(command_queue.put_nowait, line.strip())
+
+    async def handle_console():
+        nonlocal current_value, result_after_write, has_written
+        while True:
+            command = await command_queue.get()
+            action, _, value = command.partition(" ")
+            action = action.lower()
+            if action in ("help", "?"):
+                print("Commands: result <text> | show | reset | quit", flush=True)
+            elif action == "result" and value:
+                encoded = value.encode("utf-8")
+                if len(encoded) > 512:
+                    print("Result is too long (maximum 512 UTF-8 bytes).", flush=True)
+                    continue
+                result_after_write = encoded
+                if has_written:
+                    current_value = encoded
+                print(f"Next result set to {value!r}. The phone must tap Read result to fetch it.", flush=True)
+            elif action == "show":
+                print(f"Current READ -> {current_value.decode('utf-8')!r}; after WRITE -> {result_after_write.decode('utf-8')!r}", flush=True)
+            elif action == "reset":
+                current_value = b"68"
+                result_after_write = b"TEST OK"
+                has_written = False
+                print("Session reset. First READ -> 68; after WRITE -> TEST OK.", flush=True)
+            elif action == "quit":
+                stop_event.set()
+                return
+            elif command:
+                print("Unknown command. Type help for available commands.", flush=True)
 
     async def answer_read(args, deferral):
         try:
@@ -77,7 +120,7 @@ async def serve():
             deferral.complete()
 
     async def answer_write(args, deferral):
-        nonlocal current_value
+        nonlocal current_value, has_written
         try:
             request = await args.get_request_async()
             if request is None:
@@ -85,11 +128,12 @@ async def serve():
                 return
             raw = bytes(request.value)
             names = raw.decode("utf-8", errors="replace")
-            current_value = b"TEST OK"
+            current_value = result_after_write
+            has_written = True
             if request.option == GattWriteOption.WRITE_WITH_RESPONSE:
                 request.respond()
             print(f"WRITE <- {names!r} ({len(raw)} bytes)", flush=True)
-            print("Next READ will return TEST OK (test result, not a teacher grade).", flush=True)
+            print(f"Next READ will return {current_value.decode('utf-8')!r} (test result, not a teacher grade).", flush=True)
         except Exception as error:
             print(f"WRITE failed: {error}", flush=True)
         finally:
@@ -124,8 +168,19 @@ async def serve():
         print(f"Service: {SERVICE_UUID}", flush=True)
         print(f"Characteristic: {CHARACTERISTIC_UUID}", flush=True)
         print("On the Android phone: Scan, Connect, Read 68, Write names, Read TEST OK.", flush=True)
-        print("If Teacher BLE mode is empty, switch to All BLE devices. Press Ctrl+C to stop.", flush=True)
-        await asyncio.Event().wait()
+        print("Type 'result <text>' here to change the value returned after WRITE, then tap Read result on the phone.", flush=True)
+        print("Commands: result <text> | show | reset | quit", flush=True)
+        print("If Teacher BLE mode is empty, switch to All devices. Press Ctrl+C or type quit to stop.", flush=True)
+        threading.Thread(target=read_console, daemon=True, name="ble-lab-console").start()
+        console_task = asyncio.create_task(handle_console())
+        try:
+            await stop_event.wait()
+        finally:
+            console_task.cancel()
+            try:
+                await console_task
+            except asyncio.CancelledError:
+                pass
     finally:
         provider.stop_advertising()
         characteristic.remove_read_requested(read_token)

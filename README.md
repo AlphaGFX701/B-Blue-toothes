@@ -68,6 +68,8 @@ The included Windows test device can help verify a real wireless read/write cycl
 2. On a physical Android phone, install the APK, choose **Test session**, scan **All devices**, and connect to the test BLE device. It may have no display name.
 3. The first read should return `68`. After sending student names, the Windows window should log `WRITE <- ...`. The next read should return `TEST OK`.
 
+To send your own test result from the Windows CMD window, type `result HELLO FROM PC` before tapping **Read result** on the phone. The phone then reads `HELLO FROM PC` from the laptop. Use `show` to inspect the value, `reset` to restore `68` / `TEST OK`, and `quit` to stop. These are test responses, not teacher grades.
+
 `TEST OK` checks the Bluetooth link. **It is not a teacher grade.** If the Windows adapter cannot advertise as a BLE peripheral, use compatible hardware or the teacher's device. You can check support with `powershell.exe -ExecutionPolicy Bypass -File .\start-test-device.ps1 -Check`.
 
 ## Run from source
